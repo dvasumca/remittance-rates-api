@@ -1,0 +1,21 @@
+# Maven
+target/
+.mvn/wrapper/maven-wrapper.jar
+
+# Eclipse
+.classpath
+.project
+.settings/
+.metadata/
+
+# IntelliJ
+.idea/
+*.iml
+
+# Logs
+*.log
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
