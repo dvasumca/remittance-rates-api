@@ -31,13 +31,30 @@ pipeline {
         stage('Deploy') {
             steps {
                 sh '''
-                    docker rm -f ${CONTAINER_NAME} || true
+                    set -eu
+
+                    NEW_IMAGE="${APP_NAME}:${BUILD_NUMBER}"
+
+                    # Save the currently deployed image
+                    if docker inspect "${CONTAINER_NAME}" >/dev/null 2>&1; then
+                        docker inspect \
+                          --format='{{.Config.Image}}' \
+                          "${CONTAINER_NAME}" > .previous-image
+                    else
+                        : > .previous-image
+                    fi
+
+                    # Mark that deployment has started
+                    touch .deployment-started
+
+                    # Replace the running container
+                    docker rm -f "${CONTAINER_NAME}" || true
 
                     docker run -d \
-                      --name ${CONTAINER_NAME} \
+                      --name "${CONTAINER_NAME}" \
                       --restart unless-stopped \
-                      -p ${APP_PORT}:8081 \
-                      ${APP_NAME}:${BUILD_NUMBER}
+                      -p "${APP_PORT}:8081" \
+                      "${NEW_IMAGE}"
                 '''
             }
         }
@@ -46,15 +63,17 @@ pipeline {
             steps {
                 sh '''
                     for i in $(seq 1 30); do
-                        if curl -fsS http://localhost:${APP_PORT}/actuator/health; then
-                            echo "Application deployed successfully!"
+                        if curl -fsS \
+                          http://localhost:${APP_PORT}/actuator/health; then
+                            echo "Deployment health check passed!"
                             exit 0
                         fi
+
                         sleep 2
                     done
 
-                    echo "Health check failed!"
-                    docker logs ${CONTAINER_NAME}
+                    echo "Deployment health check failed!"
+                    docker logs ${CONTAINER_NAME} || true
                     exit 1
                 '''
             }
@@ -63,10 +82,39 @@ pipeline {
 
     post {
         success {
-            echo 'CI/CD pipeline completed successfully!'
+            sh 'rm -f .deployment-started .previous-image'
+            echo 'CI/CD deployment successful!'
         }
+
         failure {
-            echo 'Pipeline failed. Check the stage logs.'
+            sh '''
+                if [ -f .deployment-started ]; then
+                    echo "Deployment failed. Starting rollback..."
+
+                    OLD_IMAGE=$(cat .previous-image 2>/dev/null || true)
+
+                    docker rm -f "${CONTAINER_NAME}" || true
+
+                    if [ -n "$OLD_IMAGE" ]; then
+                        echo "Restoring previous image: $OLD_IMAGE"
+
+                        docker run -d \
+                          --name "${CONTAINER_NAME}" \
+                          --restart unless-stopped \
+                          -p "${APP_PORT}:8081" \
+                          "$OLD_IMAGE"
+
+                        echo "Rollback container started."
+                    else
+                        echo "No previous deployment available to restore."
+                    fi
+
+                    rm -f .deployment-started .previous-image
+                else
+                    echo "Failure occurred before deployment. No rollback needed."
+                fi
+            '''
+            echo 'Pipeline failed. Check the logs.'
         }
     }
 }
